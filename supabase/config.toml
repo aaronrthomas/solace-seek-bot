@@ -1,0 +1,4 @@
+project_id = "ticbjgvoxxfqyhphilor"
+
+[functions.ai-therapist-chat]
+verify_jwt = false

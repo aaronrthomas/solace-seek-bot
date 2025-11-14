@@ -71,8 +71,10 @@ export type Database = {
         Row: {
           created_at: string
           ended_at: string | null
+          expires_at: string | null
           id: string
           is_anonymous: boolean
+          session_token: string | null
           status: string
           summary: string | null
           user_id: string | null
@@ -80,8 +82,10 @@ export type Database = {
         Insert: {
           created_at?: string
           ended_at?: string | null
+          expires_at?: string | null
           id?: string
           is_anonymous?: boolean
+          session_token?: string | null
           status?: string
           summary?: string | null
           user_id?: string | null
@@ -89,8 +93,10 @@ export type Database = {
         Update: {
           created_at?: string
           ended_at?: string | null
+          expires_at?: string | null
           id?: string
           is_anonymous?: boolean
+          session_token?: string | null
           status?: string
           summary?: string | null
           user_id?: string | null
@@ -102,7 +108,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_session_access: {
+        Args: { _session_id: string; _session_token: string }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

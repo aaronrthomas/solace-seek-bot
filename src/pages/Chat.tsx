@@ -24,6 +24,7 @@ const Chat = () => {
   
   const [user, setUser] = useState<User | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -38,6 +39,28 @@ const Chat = () => {
       if (!currentUser && !isAnonymous) {
         navigate('/auth');
         return;
+      }
+
+      // For anonymous users, check if they have an existing session in localStorage
+      if (isAnonymous) {
+        const storedSessionId = localStorage.getItem('anonymous_session_id');
+        const storedToken = localStorage.getItem('anonymous_session_token');
+        const storedExpiry = localStorage.getItem('anonymous_session_expiry');
+
+        // Check if stored session is still valid
+        if (storedSessionId && storedToken && storedExpiry) {
+          const expiryDate = new Date(storedExpiry);
+          if (expiryDate > new Date()) {
+            setSessionId(storedSessionId);
+            setSessionToken(storedToken);
+            return;
+          } else {
+            // Clean up expired session data
+            localStorage.removeItem('anonymous_session_id');
+            localStorage.removeItem('anonymous_session_token');
+            localStorage.removeItem('anonymous_session_expiry');
+          }
+        }
       }
 
       // Create new session
@@ -61,6 +84,19 @@ const Chat = () => {
       }
 
       setSessionId(newSession.id);
+      
+      // Store anonymous session data in localStorage
+      if (isAnonymous && newSession.session_token && newSession.expires_at) {
+        setSessionToken(newSession.session_token);
+        localStorage.setItem('anonymous_session_id', newSession.id);
+        localStorage.setItem('anonymous_session_token', newSession.session_token);
+        localStorage.setItem('anonymous_session_expiry', newSession.expires_at);
+        
+        toast({
+          title: 'Anonymous Session Started',
+          description: 'Your session will expire in 7 days. Bookmark this page to return to your conversation.',
+        });
+      }
     };
 
     initSession();

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,13 +18,10 @@ interface Message {
 
 const Chat = () => {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const isAnonymous = searchParams.get('anonymous') === 'true';
   const { toast } = useToast();
   
   const [user, setUser] = useState<User | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -36,39 +33,18 @@ const Chat = () => {
       const { data: { user: currentUser } } = await supabase.auth.getUser();
       setUser(currentUser);
 
-      if (!currentUser && !isAnonymous) {
+      // Require authentication - no anonymous access
+      if (!currentUser) {
         navigate('/auth');
         return;
       }
 
-      // For anonymous users, check if they have an existing session in localStorage
-      if (isAnonymous) {
-        const storedSessionId = localStorage.getItem('anonymous_session_id');
-        const storedToken = localStorage.getItem('anonymous_session_token');
-        const storedExpiry = localStorage.getItem('anonymous_session_expiry');
-
-        // Check if stored session is still valid
-        if (storedSessionId && storedToken && storedExpiry) {
-          const expiryDate = new Date(storedExpiry);
-          if (expiryDate > new Date()) {
-            setSessionId(storedSessionId);
-            setSessionToken(storedToken);
-            return;
-          } else {
-            // Clean up expired session data
-            localStorage.removeItem('anonymous_session_id');
-            localStorage.removeItem('anonymous_session_token');
-            localStorage.removeItem('anonymous_session_expiry');
-          }
-        }
-      }
-
-      // Create new session
+      // Create new authenticated session
       const { data: newSession, error } = await supabase
         .from('sessions')
         .insert({
-          user_id: currentUser?.id || null,
-          is_anonymous: isAnonymous,
+          user_id: currentUser.id,
+          is_anonymous: false,
           status: 'active'
         })
         .select()
@@ -84,23 +60,10 @@ const Chat = () => {
       }
 
       setSessionId(newSession.id);
-      
-      // Store anonymous session data in localStorage
-      if (isAnonymous && newSession.session_token && newSession.expires_at) {
-        setSessionToken(newSession.session_token);
-        localStorage.setItem('anonymous_session_id', newSession.id);
-        localStorage.setItem('anonymous_session_token', newSession.session_token);
-        localStorage.setItem('anonymous_session_expiry', newSession.expires_at);
-        
-        toast({
-          title: 'Anonymous Session Started',
-          description: 'Your session will expire in 7 days. Bookmark this page to return to your conversation.',
-        });
-      }
     };
 
     initSession();
-  }, [navigate, isAnonymous, toast]);
+  }, [navigate, toast]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -132,54 +95,44 @@ const Chat = () => {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim() || !sessionId) return;
+    if (!input.trim() || !sessionId || !user) return;
 
     const userMessage = input.trim();
     setInput('');
     setLoading(true);
 
-    // Add user message to database
-    const { error: insertError } = await supabase
-      .from('messages')
-      .insert({
-        session_id: sessionId,
-        role: 'user',
-        content: userMessage
-      });
-
-    if (insertError) {
-      toast({
-        title: 'Error',
-        description: 'Failed to send message',
-        variant: 'destructive',
-      });
-      setLoading(false);
-      return;
-    }
-
-    // Get AI response
     try {
-      const { data, error } = await supabase.functions.invoke('ai-therapist-chat', {
+      // Insert user message
+      const { error: messageError } = await supabase
+        .from('messages')
+        .insert({
+          session_id: sessionId,
+          role: 'user',
+          content: userMessage
+        });
+
+      if (messageError) throw messageError;
+
+      // Call AI therapist function
+      const { data, error: functionError } = await supabase.functions.invoke('ai-therapist-chat', {
         body: {
-          messages: [
-            ...messages.map(m => ({ role: m.role, content: m.content })),
-            { role: 'user', content: userMessage }
-          ],
-          sessionId,
-          type: 'chat'
+          message: userMessage,
+          sessionId: sessionId,
+          requestType: 'chat'
         }
       });
 
-      if (error) throw error;
+      if (functionError) throw functionError;
 
-      if (data.isCrisis) {
+      // Check for crisis detection
+      if (data?.showCrisisResources) {
         setShowCrisisModal(true);
       }
-    } catch (error) {
-      console.error('Error getting AI response:', error);
+
+    } catch (error: any) {
       toast({
         title: 'Error',
-        description: 'Failed to get response',
+        description: error.message || 'Failed to send message',
         variant: 'destructive',
       });
     } finally {
@@ -188,41 +141,43 @@ const Chat = () => {
   };
 
   const handleEndSession = async () => {
-    if (!sessionId) return;
+    if (!sessionId || !user) return;
 
     setLoading(true);
 
-    // Generate summary
     try {
-      const { data } = await supabase.functions.invoke('ai-therapist-chat', {
+      // Generate session summary
+      const { data, error: summaryError } = await supabase.functions.invoke('ai-therapist-chat', {
         body: {
-          messages: messages.map(m => ({ role: m.role, content: m.content })),
-          sessionId,
-          type: 'summary'
+          sessionId: sessionId,
+          requestType: 'summary'
         }
       });
 
-      // Update session with summary
-      await supabase
+      if (summaryError) throw summaryError;
+
+      // Update session in database
+      const { error: updateError } = await supabase
         .from('sessions')
         .update({
           status: 'completed',
           ended_at: new Date().toISOString(),
-          summary: data.message
+          summary: data.summary
         })
         .eq('id', sessionId);
 
+      if (updateError) throw updateError;
+
       toast({
-        title: 'Session ended',
-        description: 'Your session summary has been saved.',
+        title: 'Session Ended',
+        description: 'Your session summary has been saved',
       });
 
       navigate('/history');
-    } catch (error) {
-      console.error('Error ending session:', error);
+    } catch (error: any) {
       toast({
         title: 'Error',
-        description: 'Failed to end session',
+        description: error.message || 'Failed to end session',
         variant: 'destructive',
       });
     } finally {
@@ -236,97 +191,111 @@ const Chat = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-background via-muted/20 to-background">
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-background via-muted/30 to-background">
       {/* Header */}
-      <header className="flex items-center justify-between p-4 border-b bg-card/50 backdrop-blur">
-        <h1 className="text-xl font-semibold text-foreground">MindfulSpace</h1>
-        <div className="flex gap-2">
-          {user && (
-            <Button variant="ghost" size="icon" onClick={() => navigate('/history')}>
-              <History className="h-5 w-5" />
-            </Button>
-          )}
-          <Button variant="ghost" size="icon" onClick={handleLogout}>
-            <LogOut className="h-5 w-5" />
-          </Button>
-        </div>
-      </header>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 && (
-          <Card className="p-6 text-center bg-primary/5 border-primary/20">
-            <h2 className="text-xl font-semibold mb-2">Welcome to your safe space</h2>
-            <p className="text-muted-foreground">
-              Share what's on your mind. I'm here to listen and support you.
-            </p>
-          </Card>
-        )}
-
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <Card
-              className={`max-w-[80%] p-4 ${
-                message.role === 'user'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-card'
-              }`}
+      <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="container flex h-16 items-center justify-between">
+          <h1 className="text-xl font-semibold">MindfulSpace</h1>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/history')}
             >
-              <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-            </Card>
+              <History className="w-4 h-4 mr-2" />
+              History
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLogout}
+            >
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
+            </Button>
           </div>
-        ))}
-
-        {loading && (
-          <div className="flex justify-start">
-            <Card className="max-w-[80%] p-4 bg-card">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-sm">Thinking...</span>
-              </div>
-            </Card>
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
+        </div>
       </div>
 
-      {/* Input */}
-      <div className="p-4 border-t bg-card/50 backdrop-blur">
-        <div className="flex gap-2 max-w-4xl mx-auto">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder="Share what's on your mind..."
-            className="min-h-[60px] resize-none"
-            disabled={loading}
-          />
-          <div className="flex flex-col gap-2">
-            <Button
-              onClick={handleSend}
-              disabled={loading || !input.trim()}
-              size="icon"
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4">
+        <div className="container max-w-3xl space-y-4">
+          {messages.length === 0 && (
+            <Card className="p-6 text-center">
+              <AlertCircle className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+              <h2 className="text-lg font-semibold mb-2">Welcome to your safe space</h2>
+              <p className="text-muted-foreground">
+                Share what's on your mind. This is a judgment-free zone where you can express yourself openly.
+              </p>
+            </Card>
+          )}
+
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
-              <Send className="h-4 w-4" />
-            </Button>
-            <Button
-              onClick={handleEndSession}
-              disabled={loading || messages.length === 0}
-              variant="secondary"
-              size="icon"
-            >
-              <AlertCircle className="h-4 w-4" />
-            </Button>
+              <Card
+                className={`max-w-[80%] p-4 ${
+                  message.role === 'user'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-muted'
+                }`}
+              >
+                <p className="whitespace-pre-wrap">{message.content}</p>
+              </Card>
+            </div>
+          ))}
+
+          {loading && (
+            <div className="flex justify-start">
+              <Card className="max-w-[80%] p-4 bg-muted">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Thinking...</span>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+      </div>
+
+      {/* Input Area */}
+      <div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-4">
+        <div className="container max-w-3xl">
+          <div className="flex gap-2 mb-2">
+            <Textarea
+              placeholder="Type your message here..."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              disabled={loading}
+              className="min-h-[80px]"
+            />
+            <div className="flex flex-col gap-2">
+              <Button onClick={handleSend} disabled={loading || !input.trim()} size="icon">
+                <Send className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleEndSession}
+                disabled={loading || messages.length === 0}
+                size="sm"
+              >
+                End Session
+              </Button>
+            </div>
           </div>
+          <p className="text-xs text-muted-foreground text-center">
+            {user && `Logged in as ${user.email}`}
+          </p>
         </div>
       </div>
 

@@ -104,9 +104,6 @@ const Auth = () => {
     }
   };
 
-  const handleAnonymous = () => {
-    navigate('/chat?anonymous=true');
-  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background via-muted/30 to-background p-4">
@@ -216,25 +213,6 @@ const Auth = () => {
               </TabsContent>
             </Tabs>
 
-            <div className="mt-6 space-y-4">
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t border-border" />
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-card px-2 text-muted-foreground">Or</span>
-                </div>
-              </div>
-
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full"
-                onClick={handleAnonymous}
-              >
-                Continue Anonymously
-              </Button>
-            </div>
           </CardContent>
         </Card>
 

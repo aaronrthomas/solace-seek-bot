@@ -13,7 +13,82 @@ serve(async (req) => {
 
   try {
     const { messages, sessionId, type = 'chat' } = await req.json();
-    console.log('AI Therapist Chat - Type:', type, 'Session:', sessionId);
+    
+    // Validate input
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'Messages array is required and must not be empty' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    if (!sessionId || typeof sessionId !== 'string') {
+      return new Response(
+        JSON.stringify({ error: 'Valid session ID is required' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    // Validate message structure and length
+    for (const msg of messages) {
+      if (!msg.role || !msg.content) {
+        return new Response(
+          JSON.stringify({ error: 'Each message must have role and content' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      if (msg.content.length > 5000) {
+        return new Response(
+          JSON.stringify({ error: 'Message content too long (max 5000 characters)' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+    
+    // Validate session ownership
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    const authHeader = req.headers.get('Authorization');
+    let userId: string | null = null;
+    
+    // Extract user ID from JWT if present
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (!error && user) {
+          userId = user.id;
+        }
+      } catch {
+        // Token invalid or expired, treat as anonymous
+      }
+    }
+    
+    // Verify session ownership
+    const { data: session, error: sessionError } = await supabase
+      .from('sessions')
+      .select('user_id, is_anonymous')
+      .eq('id', sessionId)
+      .single();
+    
+    if (sessionError || !session) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid session' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    // Check ownership: either user owns it or it's their anonymous session
+    if (session.user_id && session.user_id !== userId) {
+      return new Response(
+        JSON.stringify({ error: 'Access denied to this session' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    console.log('AI Therapist Chat - Request received');
 
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     if (!LOVABLE_API_KEY) {
@@ -113,20 +188,14 @@ Important boundaries:
     const data = await response.json();
     const aiMessage = data.choices[0].message.content;
 
-    // Save assistant message to database if sessionId provided
-    if (sessionId) {
-      const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-      const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-      const supabase = createClient(supabaseUrl, supabaseKey);
-
-      await supabase
-        .from('messages')
-        .insert({
-          session_id: sessionId,
-          role: 'assistant',
-          content: aiMessage
-        });
-    }
+    // Save assistant message to database
+    await supabase
+      .from('messages')
+      .insert({
+        session_id: sessionId,
+        role: 'assistant',
+        content: aiMessage
+      });
 
     return new Response(
       JSON.stringify({ 

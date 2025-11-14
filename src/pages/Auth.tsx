@@ -8,6 +8,18 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { Heart, Loader2 } from 'lucide-react';
+import { z } from 'zod';
+
+const signUpSchema = z.object({
+  email: z.string().trim().email('Invalid email address').max(255, 'Email too long'),
+  password: z.string().min(8, 'Password must be at least 8 characters').max(72, 'Password too long'),
+  displayName: z.string().trim().min(1, 'Display name required').max(100, 'Display name too long')
+});
+
+const signInSchema = z.object({
+  email: z.string().trim().email('Invalid email address').max(255, 'Email too long'),
+  password: z.string().min(1, 'Password required')
+});
 
 const Auth = () => {
   const navigate = useNavigate();
@@ -21,28 +33,40 @@ const Auth = () => {
     e.preventDefault();
     setLoading(true);
     
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { display_name: displayName },
-        emailRedirectTo: `${window.location.origin}/`,
-      },
-    });
-
-    setLoading(false);
-
-    if (error) {
-      toast({
-        title: 'Error',
-        description: error.message,
-        variant: 'destructive',
+    try {
+      const validated = signUpSchema.parse({ email, password, displayName });
+      
+      const { error } = await supabase.auth.signUp({
+        email: validated.email,
+        password: validated.password,
+        options: {
+          data: { display_name: validated.displayName },
+          emailRedirectTo: `${window.location.origin}/`,
+        },
       });
-    } else {
-      toast({
-        title: 'Success',
-        description: 'Account created! You can now log in.',
-      });
+
+      if (error) {
+        toast({
+          title: 'Error',
+          description: error.message,
+          variant: 'destructive',
+        });
+      } else {
+        toast({
+          title: 'Success',
+          description: 'Account created! You can now log in.',
+        });
+      }
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        toast({
+          title: 'Validation Error',
+          description: error.errors[0].message,
+          variant: 'destructive',
+        });
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -50,21 +74,33 @@ const Auth = () => {
     e.preventDefault();
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    setLoading(false);
-
-    if (error) {
-      toast({
-        title: 'Error',
-        description: error.message,
-        variant: 'destructive',
+    try {
+      const validated = signInSchema.parse({ email, password });
+      
+      const { error } = await supabase.auth.signInWithPassword({
+        email: validated.email,
+        password: validated.password,
       });
-    } else {
-      navigate('/chat');
+
+      if (error) {
+        toast({
+          title: 'Error',
+          description: error.message,
+          variant: 'destructive',
+        });
+      } else {
+        navigate('/chat');
+      }
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        toast({
+          title: 'Validation Error',
+          description: error.errors[0].message,
+          variant: 'destructive',
+        });
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
